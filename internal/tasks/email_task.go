@@ -494,16 +494,17 @@ func (s *tasksService) selectWarmupPartner(ctx context.Context, account Email) (
 		return nil, err
 	}
 
-	// A thin tier borrows the other tier's proven mailboxes; the SQL gates age and health.
+	// Only a thin premium tier borrows, and only proven free mailboxes: free
+	// and restricted traffic never reaches paying inboxes. The floor counts
+	// other mailboxes, as the scheduler does.
 	fallbackIDs := []uuid.UUID{}
-	borrowed := map[uuid.UUID]struct{}{}
-	if len(participantIDs) < config.WarmupPoolTierFallbackFloor {
-		if extra, ferr := s.warmupRepo.GetPoolFallbackRecipients(ctx, poolType, config.WarmupPoolFallbackMinAgeDays*24*time.Hour); ferr == nil {
+	if poolType == "premium" && countOthers(participantIDs, account.ID) < config.WarmupPoolTierFallbackFloor {
+		extra, ferr := s.warmupRepo.GetPoolFallbackRecipients(ctx, poolType, config.WarmupPoolFallbackMinAgeDays*24*time.Hour)
+		if ferr != nil {
+			log.Warn().Err(ferr).Str("email_account_id", account.ID.String()).Msg("warmup: could not borrow from the free tier")
+		} else {
 			fallbackIDs = extra
 			participantIDs = append(participantIDs, extra...)
-			for _, id := range extra {
-				borrowed[id] = struct{}{}
-			}
 		}
 	}
 
@@ -566,6 +567,17 @@ func (s *tasksService) selectWarmupPartner(ctx context.Context, account Email) (
 			routingRules = rules
 			if e, eErr := s.warmupRepo.GetPoolParticipantEmails(ctx, poolType, true); eErr == nil {
 				emailsByID = e
+				// Borrowed candidates must answer to the same rules, or an
+				// exclusion could be bypassed by a mailbox from the other tier.
+				if len(fallbackIDs) > 0 {
+					if other, oerr := s.warmupRepo.GetPoolParticipantEmails(ctx, otherPoolType(poolType), true); oerr == nil {
+						for _, id := range fallbackIDs {
+							if em, ok := other[id]; ok {
+								emailsByID[id] = em
+							}
+						}
+					}
+				}
 			}
 		}
 	}
@@ -599,8 +611,13 @@ func (s *tasksService) selectWarmupPartner(ctx context.Context, account Email) (
 		partnerCounts = nil
 	}
 
-	var availablePartners []uuid.UUID
-	var fallbackPartners []uuid.UUID
+	// Own tier first: fresh own-tier partners, then fresh borrowed ones, and
+	// only then a partner this sender has used recently.
+	borrowed := make(map[uuid.UUID]struct{}, len(fallbackIDs))
+	for _, id := range fallbackIDs {
+		borrowed[id] = struct{}{}
+	}
+	var ownFresh, borrowedFresh, ownAny, borrowedAny []uuid.UUID
 	for _, id := range participantIDs {
 		if id == account.ID {
 			continue
@@ -608,16 +625,26 @@ func (s *tasksService) selectWarmupPartner(ctx context.Context, account Email) (
 		if _, usedToday := todayPartnerSet[id]; usedToday {
 			continue
 		}
-		fallbackPartners = append(fallbackPartners, id)
+		_, isBorrowed := borrowed[id]
 		_, recentlyUsed := recentPartnerSet[id]
-		overUsed := partnerCounts[id] >= partnerMaxSharedWindow
-		if !recentlyUsed && !overUsed {
-			availablePartners = append(availablePartners, id)
+		fresh := !recentlyUsed && partnerCounts[id] < partnerMaxSharedWindow
+		switch {
+		case isBorrowed && fresh:
+			borrowedFresh = append(borrowedFresh, id)
+		case isBorrowed:
+			borrowedAny = append(borrowedAny, id)
+		case fresh:
+			ownFresh = append(ownFresh, id)
+		default:
+			ownAny = append(ownAny, id)
 		}
 	}
-
-	if len(availablePartners) == 0 && len(fallbackPartners) > 0 {
-		availablePartners = fallbackPartners
+	var availablePartners []uuid.UUID
+	for _, tier := range [][]uuid.UUID{ownFresh, borrowedFresh, ownAny, borrowedAny} {
+		if len(tier) > 0 {
+			availablePartners = tier
+			break
+		}
 	}
 
 	if len(availablePartners) == 0 {
@@ -643,14 +670,8 @@ func (s *tasksService) selectWarmupPartner(ctx context.Context, account Email) (
 		})
 
 		if s.warmupHealth != nil {
-			// A borrowed partner lives in the other tier's pool; gating it
-			// against the sender's rejected every one, so a thin tier never
-			// actually borrowed (#495).
-			gatePool := poolType
-			if _, ok := borrowed[partnerID]; ok {
-				gatePool = otherPoolType(poolType)
-			}
-			if ok, _, _ := s.warmupHealth.CanParticipate(ctx, partnerID, gatePool); !ok {
+			// Gated in the pool the partner is in, which for a borrowed one is not the sender's (#495).
+			if ok, _, _ := s.warmupHealth.CanParticipateAnyPool(ctx, partnerID); !ok {
 				availablePartners = removePartnerID(availablePartners, partnerID)
 				continue
 			}
@@ -1128,7 +1149,8 @@ func (s *tasksService) directedWarmupPartner(ctx context.Context, taskID uuid.UU
 	target := *warmupTask.TargetAccountID
 
 	if s.warmupHealth != nil {
-		if ok, _, herr := s.warmupHealth.CanParticipate(ctx, target, poolType); herr != nil || !ok {
+		// The target may sit in the other tier when it was borrowed (#495).
+		if ok, _, herr := s.warmupHealth.CanParticipateAnyPool(ctx, target); herr != nil || !ok {
 			return nil
 		}
 	}
@@ -1166,6 +1188,18 @@ func (s *tasksService) orgBlocksSending(ctx context.Context, orgID *uuid.UUID) b
 }
 
 // otherPoolType is the tier a thin pool borrows from.
+// countOthers is the recipient count the scheduler also uses: the pool minus
+// the sender itself.
+func countOthers(ids []uuid.UUID, self uuid.UUID) int {
+	n := 0
+	for _, id := range ids {
+		if id != self {
+			n++
+		}
+	}
+	return n
+}
+
 func otherPoolType(poolType string) string {
 	if poolType == "premium" {
 		return "free"

@@ -37,6 +37,20 @@ type partnerRoutingFixture struct {
 	atMS     uuid.UUID
 }
 
+// requireEmptyPool skips when the pool already has members. A pick is
+// weighted across the whole pool, so a stray participant would dilute the
+// measurement into a meaningless pass.
+func requireEmptyPool(t *testing.T, pool *pgxpool.Pool, poolID uuid.UUID) {
+	t.Helper()
+	var occupied int
+	if err := pool.QueryRow(context.Background(), `SELECT count(*) FROM warmup_pool_participants WHERE pool_id = $1`, poolID).Scan(&occupied); err != nil {
+		t.Fatalf("count pool %s: %v", poolID, err)
+	}
+	if occupied != 0 {
+		t.Skipf("pool %s already has participants; cannot isolate the measurement", poolID)
+	}
+}
+
 func newPartnerRoutingFixture(t *testing.T) *partnerRoutingFixture {
 	t.Helper()
 	dsn := os.Getenv("WARMBLY_TEST_DB")
@@ -50,15 +64,7 @@ func newPartnerRoutingFixture(t *testing.T) *partnerRoutingFixture {
 	}
 	t.Cleanup(func() { handle.Pool.Close() })
 
-	// A pick is weighted across the WHOLE pool, so a stray participant would
-	// dilute the measurement into a meaningless pass.
-	var occupied int
-	if err := handle.Pool.QueryRow(ctx, `SELECT count(*) FROM warmup_pool_participants WHERE pool_id = $1`, freePoolID).Scan(&occupied); err != nil {
-		t.Fatalf("count free pool: %v", err)
-	}
-	if occupied != 0 {
-		t.Skip("free pool already has participants; cannot isolate the measurement")
-	}
+	requireEmptyPool(t, handle.Pool, freePoolID)
 
 	f := &partnerRoutingFixture{
 		pool: handle.Pool, user: uuid.New(), org: uuid.New(),

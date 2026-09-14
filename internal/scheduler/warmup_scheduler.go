@@ -243,8 +243,8 @@ func (s *schedulerService) CalculateNextWarmupTime(ctx context.Context, accountI
 	if s.warmupRepo != nil {
 		poolType := s.warmupPoolTypeForAccount(ctx, account)
 		eligibleRecipients, err := s.warmupRepo.CountEligibleRecipients(ctx, poolType, accountID)
-		if err == nil && eligibleRecipients < config.WarmupPoolTierFallbackFloor {
-			// A thin tier borrows the other tier's proven mailboxes, matching the partner selector.
+		if err == nil && poolType == "premium" && eligibleRecipients < config.WarmupPoolTierFallbackFloor {
+			// Only a thin premium tier borrows, and only free mailboxes, matching the partner selector.
 			if fallback, ferr := s.warmupRepo.GetPoolFallbackRecipients(ctx, poolType, config.WarmupPoolFallbackMinAgeDays*24*time.Hour); ferr == nil {
 				eligibleRecipients += len(fallback)
 			}

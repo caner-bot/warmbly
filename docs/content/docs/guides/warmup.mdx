@@ -33,20 +33,20 @@ The controller runs every six hours against the last seven days of demand: at le
 
 ## Pools
 
-A pool is the set of mailboxes that warm each other. Your mailbox only exchanges warmup mail within its own pool. Every instance has both pools from install, so a self-hosted instance warms within its own pools from the first mailbox; [Warmbly Cloud](/guides/warmbly-cloud/) is how it joins the hosted one instead.
+A pool is the set of mailboxes that warm each other. Your mailbox exchanges warmup mail within its own pool, with one documented exception below. Every instance has both pools from install, so a self-hosted instance warms within its own pools from the first mailbox; [Warmbly Cloud](/guides/warmbly-cloud/) is how it joins the hosted one instead.
 
 | Pool | Who is in it |
 |------|--------------|
 | `premium` | Paid organizations' mailboxes. The default for paid accounts, isolated from lower-trust traffic. |
-| `free` | Lower-trust or trial mailboxes, kept separate so free traffic never mixes into premium reputation. |
+| `free` | Lower-trust or trial mailboxes, kept separate so free traffic does not mix into premium reputation. |
 
 A mailbox belongs to exactly one pool at a time. When its plan changes the mailbox moves between pools rather than joining a second one, and it takes its warmup standing with it, so a quarantine or block is not cleared by changing tier.
 
-The separation is never crossed silently. Warmbly spreads sends across many partners and recipient domains rather than looping the same two mailboxes, since tight reciprocal pairs are easy for providers to spot. **Pool quality matters more than pool size.**
+The separation is crossed in exactly one direction, and never silently: when the premium tier runs thin (fewer than 25 other eligible recipients), it borrows free-tier mailboxes that have been members for at least three days and are healthy now, prefers a fresh partner from its own tier before a borrowed one, and checks each borrowed mailbox against its own pool's standing before using it. The free tier never borrows premium mailboxes, so free or restricted traffic does not reach paying inboxes.
+
+Warmbly spreads sends across many partners and recipient domains rather than looping the same two mailboxes, since tight reciprocal pairs are easy for providers to spot. **Pool quality matters more than pool size.**
 
 Self-hosted instances warm only among their own mailboxes unless they are linked to Warmbly Cloud, which puts their enrolled mailboxes into these same pools. See [Warmbly Cloud for self-hosted instances](/guides/warmbly-cloud/).
-
-When a tier runs thin (fewer than 25 eligible recipients), partner selection borrows the other tier's mailboxes that have been healthy members for at least three days, and checks each one against its own pool's standing before using it. Paid mailboxes are always served from the paid tier first.
 
 ### Choosing partners
 

@@ -397,6 +397,8 @@ This is modeled in:
 
 Migration 000156 guarantees exactly one pool per type on every instance, under `models.WarmupPoolFreeID` and `models.WarmupPoolPremiumID` (`warmup_pools_pool_type_key` makes it structural, and the migration moves any pre-existing pool onto those ids). Nothing else may insert into `warmup_pools`: not the sandbox, not the dev scripts, not a test fixture.
 
+Borrowing across tiers is one-directional: a thin premium tier (fewer than `WarmupPoolTierFallbackFloor` other recipients) may borrow proven free mailboxes through `GetPoolFallbackRecipients`, drawing its own tier's fresh partners first; the free tier never borrows premium ones. A recipient is gated with `CanParticipateAnyPool`, which resolves the pool from the membership row; gating a recipient against the sender's pool is what made borrowing dead for months (#495).
+
 Keep this separation intact. Free-tier accounts should not silently mix into premium warmup traffic, and dedicated-worker accounts should still follow the intended warmup pool policy explicitly rather than by accident.
 
 ## Worker Networking Rules
