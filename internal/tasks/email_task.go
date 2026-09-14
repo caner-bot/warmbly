@@ -496,10 +496,14 @@ func (s *tasksService) selectWarmupPartner(ctx context.Context, account Email) (
 
 	// A thin tier borrows the other tier's proven mailboxes; the SQL gates age and health.
 	fallbackIDs := []uuid.UUID{}
+	borrowed := map[uuid.UUID]struct{}{}
 	if len(participantIDs) < config.WarmupPoolTierFallbackFloor {
 		if extra, ferr := s.warmupRepo.GetPoolFallbackRecipients(ctx, poolType, config.WarmupPoolFallbackMinAgeDays*24*time.Hour); ferr == nil {
 			fallbackIDs = extra
 			participantIDs = append(participantIDs, extra...)
+			for _, id := range extra {
+				borrowed[id] = struct{}{}
+			}
 		}
 	}
 
@@ -639,7 +643,14 @@ func (s *tasksService) selectWarmupPartner(ctx context.Context, account Email) (
 		})
 
 		if s.warmupHealth != nil {
-			if ok, _, _ := s.warmupHealth.CanParticipate(ctx, partnerID, poolType); !ok {
+			// A borrowed partner lives in the other tier's pool; gating it
+			// against the sender's rejected every one, so a thin tier never
+			// actually borrowed (#495).
+			gatePool := poolType
+			if _, ok := borrowed[partnerID]; ok {
+				gatePool = otherPoolType(poolType)
+			}
+			if ok, _, _ := s.warmupHealth.CanParticipate(ctx, partnerID, gatePool); !ok {
 				availablePartners = removePartnerID(availablePartners, partnerID)
 				continue
 			}
