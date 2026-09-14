@@ -8,6 +8,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	warmupapp "github.com/warmbly/warmbly/internal/app/warmup"
+	"github.com/warmbly/warmbly/internal/config"
 	"github.com/warmbly/warmbly/internal/models"
 	"github.com/warmbly/warmbly/internal/pkg/encrypt"
 	"github.com/warmbly/warmbly/internal/repository"
@@ -42,6 +43,7 @@ func newCrossTierFixture(t *testing.T) *crossTierFixture {
 			sql string
 			arg any
 		}{
+			{`DELETE FROM warmup_tokens WHERE sender_account_id IN (SELECT id FROM email_accounts WHERE organization_id = $1)`, f.org},
 			{`DELETE FROM warmup_pool_participants WHERE email_account_id IN (SELECT id FROM email_accounts WHERE organization_id = $1)`, f.org},
 			{`DELETE FROM email_accounts WHERE organization_id = $1`, f.org},
 			{`DELETE FROM organizations WHERE id = $1`, f.org},
@@ -131,5 +133,29 @@ func TestLiveWarmupBorrowPrefersAFreshOwnTierPartner(t *testing.T) {
 		if partner.ID != own {
 			t.Fatalf("pick %d chose %s over the fresh own-tier partner %s", i, partner.ID, own)
 		}
+	}
+}
+
+// The floor counts the other mailboxes, as the scheduler's
+// CountEligibleRecipients does: a premium tier of exactly the floor including
+// the sender is one short and still borrows.
+func TestLiveWarmupBorrowFloorCountsTheOtherMailboxes(t *testing.T) {
+	f := newCrossTierFixture(t)
+	sender := f.member(t, models.WarmupPoolPremiumID, 0)
+	// Every own-tier partner was used today, so only a borrowed one can be picked.
+	for i := 1; i < config.WarmupPoolTierFallbackFloor; i++ {
+		own := f.member(t, models.WarmupPoolPremiumID, 0)
+		task := uuid.New()
+		f.exec(t, `INSERT INTO tasks (id, task_type, email_account_id, status, message_id) VALUES ($1, 'warmup', $2, 'completed', '')`, task, sender)
+		f.exec(t, `INSERT INTO warmup_tokens (task_id, sender_account_id, recipient_account_id) VALUES ($1, $2, $3)`, task, sender, own)
+	}
+	borrowed := f.member(t, models.WarmupPoolFreeID, 4)
+
+	partner, err := f.svc.selectWarmupPartner(context.Background(), f.sender(sender, "premium"))
+	if err != nil {
+		t.Fatalf("a premium tier at the floor including its sender did not borrow: %v", err)
+	}
+	if partner.ID != borrowed {
+		t.Fatalf("selected %s, want the borrowed free mailbox %s", partner.ID, borrowed)
 	}
 }
